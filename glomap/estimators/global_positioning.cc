@@ -2,6 +2,10 @@
 
 #include "glomap/estimators/cost_function.h"
 
+#include <fstream>
+#include <sstream>
+#include <iostream>
+
 namespace glomap {
 namespace {
 
@@ -15,6 +19,23 @@ Eigen::Vector3d RandVector3d(std::mt19937& random_generator,
 }
 
 }  // namespace
+
+// L2 正则化的残差项
+struct PositionRegularization {
+    PositionRegularization(const Eigen::Vector3d& initial_position)
+        : initial_position_(initial_position) {}
+
+    template <typename T>
+    bool operator()(const T* const position, T* residual) const {
+        // 计算当前位置和初始位置的差异 (L2 正则化)
+        residual[0] = position[0] - T(initial_position_[0]);
+        residual[1] = position[1] - T(initial_position_[1]);
+        residual[2] = position[2] - T(initial_position_[2]);
+        return true;
+    }
+
+    const Eigen::Vector3d initial_position_;  // 初始相机位置
+};
 
 GlobalPositioner::GlobalPositioner(const GlobalPositionerOptions& options)
     : options_(options) {
@@ -61,6 +82,25 @@ bool GlobalPositioner::Solve(const ViewGraph& view_graph,
 
   AddCamerasAndPointsToParameterGroups(images, tracks);
 
+  // // 为相机位置添加 L2 正则化，将相机位置保持在初始值附近
+  // for (auto& [image_id, image] : images) {
+  //     Eigen::Vector3d initial_position = image.cam_from_world.translation;
+
+  //     // 设置正则化项的权重
+  //     double regularization_weight = 1;
+      
+  //     // 使用 ScaledLoss 来设置权重
+  //     ceres::LossFunction* loss_function = new ceres::ScaledLoss(nullptr, regularization_weight, ceres::TAKE_OWNERSHIP);
+
+  //     // 创建 L2 正则化残差块
+  //     ceres::CostFunction* position_regularizer = 
+  //         new ceres::AutoDiffCostFunction<PositionRegularization, 3, 3>(
+  //             new PositionRegularization(initial_position));
+      
+  //     // 将残差块添加到问题中，并应用带权重的损失函数
+  //     problem_->AddResidualBlock(position_regularizer, loss_function, image.cam_from_world.translation.data());
+  // }
+
   // Parameterize the variables, set image poses / tracks / scales to be
   // constant if desired
   ParameterizeVariables(images, tracks);
@@ -101,10 +141,39 @@ void GlobalPositioner::SetupProblem(
                       }));
 }
 
+// 根据 image_id (即行号) 从 txt 文件中获取对应行的 translation 值
+Eigen::Vector3d GetTranslationFromTxt(const std::string& filename, int image_id) {
+    std::ifstream infile(filename);
+    std::string line;
+    int current_line = 0;
+
+    // 遍历文件中的每一行
+    while (std::getline(infile, line)) {
+        current_line++;
+
+        // 当行号等于 image_id 时，处理该行
+        if (current_line == image_id) {
+            std::istringstream iss(line);
+            std::string dummy_column;  // 用来忽略第一列
+            double x, y, z;
+
+            // 读取第1列并跳过，接着读取第2、3、4列
+            if (std::getline(iss, dummy_column, ',') && iss >> x && iss.get() && iss >> y && iss.get() && iss >> z) {
+                return Eigen::Vector3d(x, y, z);  // 返回读取到的 translation
+            }
+        }
+    }
+    // 如果没有找到对应的行，返回一个默认的零向量
+    return Eigen::Vector3d::Zero();
+}
+
 void GlobalPositioner::InitializeRandomPositions(
     const ViewGraph& view_graph,
     std::unordered_map<image_t, Image>& images,
     std::unordered_map<track_t, Track>& tracks) {
+
+ std::string filename = "/home/hjl/data/translation.txt";
+
   std::unordered_set<image_t> constrained_positions;
   constrained_positions.reserve(images.size());
   for (const auto& [pair_id, image_pair] : view_graph.image_pairs) {
@@ -128,19 +197,35 @@ void GlobalPositioner::InitializeRandomPositions(
 
   if (!options_.generate_random_positions || !options_.optimize_positions) {
     for (auto& [image_id, image] : images) {
-      image.cam_from_world.translation = image.Center();
+      // image.cam_from_world.translation = image.Center();
+      Eigen::Vector3d translation_from_file = GetTranslationFromTxt(filename, image_id); // 根据 image_id 从文件中获取 translation 值
+      if (translation_from_file != Eigen::Vector3d::Zero()) {
+              image.cam_from_world.translation = translation_from_file;
+          } else {
+              // 如果文件中没有找到，使用随机位置
+              image.cam_from_world.translation = image.Center();
+              std::cout << "image_id: " << image_id << ", translation: " << image.cam_from_world.translation.transpose() << std::endl;     ////////
+          }
     }
     return;
   }
 
   // Generate random positions for the cameras centers.
   for (auto& [image_id, image] : images) {
+    Eigen::Vector3d translation_from_file = GetTranslationFromTxt(filename, image_id); // 根据 image_id 从文件中获取 translation 值
     // Only set the cameras to be random if they are needed to be optimized
-    if (constrained_positions.find(image_id) != constrained_positions.end())
-      image.cam_from_world.translation =
-          100.0 * RandVector3d(random_generator_, -1, 1);
-    else
-      image.cam_from_world.translation = image.Center();
+    if (translation_from_file != Eigen::Vector3d::Zero()) {
+            image.cam_from_world.translation = translation_from_file;
+        } else {
+            // 如果文件中没有找到，使用随机位置
+            image.cam_from_world.translation = 100.0 * RandVector3d(random_generator_, -1, 1);
+            std::cout << "image_id: " << image_id << ", translation: " << image.cam_from_world.translation.transpose() << std::endl;     ////////
+        }
+    // if (constrained_positions.find(image_id) != constrained_positions.end())
+    //   image.cam_from_world.translation =
+    //       100.0 * RandVector3d(random_generator_, -1, 1);
+    // else
+    //   image.cam_from_world.translation = image.Center();
   }
 
   VLOG(2) << "Constrained positions: " << constrained_positions.size();

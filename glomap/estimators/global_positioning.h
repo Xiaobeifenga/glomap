@@ -25,7 +25,7 @@ struct GlobalPositionerOptions : public OptimizationBaseOptions {
   bool generate_scales = true;  // Now using fixed 1 as initializaiton
 
   // Flags for which parameters to optimize
-  bool optimize_positions = true;
+  bool optimize_positions = false;
   bool optimize_points = true;
   bool optimize_scales = true;
 

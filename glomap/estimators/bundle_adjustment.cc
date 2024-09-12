@@ -129,11 +129,38 @@ void BundleAdjuster::ParameterizeVariables(
     std::unordered_map<camera_t, Camera>& cameras,
     std::unordered_map<image_t, Image>& images,
     std::unordered_map<track_t, Track>& tracks) {
+
+  // std::vector<image_t> fixed_camera_ids = {1, 50, 100}; // 指定需要固定的相机ID列表
+
   image_t center;
 
   // Parameterize rotations, and set rotations and translations to be constant
   // if desired FUTURE: Consider fix the scale of the reconstruction
   int counter = 0;
+  // for (auto& [image_id, image] : images) {
+  //   if (problem_->HasParameterBlock(image.cam_from_world.rotation.coeffs().data())) {
+  //     colmap::SetQuaternionManifold(problem_.get(), image.cam_from_world.rotation.coeffs().data());
+
+  //     // 判断当前相机是否在固定列表中
+  //     if (std::find(fixed_camera_ids.begin(), fixed_camera_ids.end(), image_id) != fixed_camera_ids.end()) {
+  //       problem_->SetParameterBlockConstant(image.cam_from_world.rotation.coeffs().data());
+  //       problem_->SetParameterBlockConstant(image.cam_from_world.translation.data());
+  //       continue;  // 如果相机在固定列表中，跳过剩下的逻辑
+  //     }
+
+  //     if (counter == 0) {
+  //       center = image_id;
+  //       counter++;
+  //     }
+
+  //     if (!options_.optimize_rotations)
+  //       problem_->SetParameterBlockConstant(image.cam_from_world.rotation.coeffs().data());
+
+  //     if (!options_.optimize_translation)
+  //       problem_->SetParameterBlockConstant(image.cam_from_world.translation.data());
+  //   }
+  // }
+
   for (auto& [image_id, image] : images) {
     if (problem_->HasParameterBlock(
             image.cam_from_world.rotation.coeffs().data())) {

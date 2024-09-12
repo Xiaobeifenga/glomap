@@ -7,6 +7,10 @@
 #include <iostream>
 #include <queue>
 
+#include <fstream>
+#include <sstream>
+#include "glomap/estimators/cost_function.h"
+
 namespace glomap {
 namespace {
 double RelAngleError(double angle_12, double angle_1, double angle_2) {
@@ -20,6 +24,31 @@ double RelAngleError(double angle_12, double angle_1, double angle_2) {
 }
 }  // namespace
 
+// 正则化
+struct RotationRegularization {
+    RotationRegularization(const Eigen::Quaterniond& initial_rotation, double weight)
+        : initial_rotation_(initial_rotation), weight_(weight) {}
+
+    template <typename T>
+    bool operator()(const T* const rotation_params, T* residual) const {
+        // 将旋转参数转换为四元数
+        Eigen::Quaternion<T> estimated_rotation(rotation_params[0], rotation_params[1], rotation_params[2], rotation_params[3]);
+
+        // 计算旋转之间的差异
+        Eigen::Quaternion<T> delta_rotation = initial_rotation_.template cast<T>().inverse() * estimated_rotation;
+
+        // 使用四元数的虚部（x、y、z）来衡量旋转差异，并加权
+        residual[0] = T(weight_) * T(2.0) * delta_rotation.x();
+        residual[1] = T(weight_) * T(2.0) * delta_rotation.y();
+        residual[2] = T(weight_) * T(2.0) * delta_rotation.z();
+
+        return true;
+    }
+
+    const Eigen::Quaterniond initial_rotation_;
+    const double weight_;  // 可设置的权重，控制正则化的强度
+};
+
 bool RotationEstimator::EstimateRotations(
     const ViewGraph& view_graph, std::unordered_map<image_t, Image>& images) {
   // Initialize the rotation from maximum spanning tree
@@ -29,6 +58,30 @@ bool RotationEstimator::EstimateRotations(
 
   // Set up the linear system
   SetupLinearSystem(view_graph, images);
+
+  // // 添加L2正则化项，约束旋转尽量与初始旋转值保持一致  修改
+  // ceres::Problem problem;  // 创建 ceres::Problem 实例
+  // double regularization_weight = 10.0;
+  // for (auto& [image_id, image] : images) {
+  //   if (!image.is_registered) continue;
+  //   // 获取初始旋转值
+  //   Eigen::Quaterniond initial_rotation = image.cam_from_world.rotation;
+  //   // 构造旋转正则化的残差块
+  //   ceres::CostFunction* cost_function = new ceres::AutoDiffCostFunction<RotationRegularization, 3, 4>(
+  //       new RotationRegularization(initial_rotation, regularization_weight));
+  //   // 将正则化项加入到优化问题中
+  //   problem.AddResidualBlock(cost_function, nullptr, image.cam_from_world.rotation.coeffs().data());
+  // }
+  // // 设置 Ceres Solver 的配置
+  // ceres::Solver::Options options;
+  // options.max_num_iterations = 100;
+  // options.linear_solver_type = ceres::DENSE_QR;
+  // options.minimizer_progress_to_stdout = true;
+  // // 执行优化
+  // ceres::Solver::Summary summary;
+  // ceres::Solve(options, &problem, &summary);
+  // // 输出优化结果
+  // std::cout << summary.BriefReport() << "\n";
 
   // Solve the linear system for L1 norm optimization
   if (options_.max_num_l1_iterations > 0) {
@@ -61,13 +114,59 @@ bool RotationEstimator::EstimateRotations(
   return true;
 }
 
+Eigen::Matrix3d GetRotationFromTxt(const std::string& filename, int image_id) {
+    std::ifstream infile(filename);
+    std::string line;
+    int current_line = 0;
+
+    // 遍历文件中的每一行
+    while (std::getline(infile, line)) {
+        current_line++;
+
+        // 当行号等于 image_id 时，处理该行
+        if (current_line == image_id) {
+            std::istringstream iss(line);
+            std::string dummy_column;  // 用来忽略第一列
+            double r11, r12, r13, r21, r22, r23, r31, r32, r33;
+            
+            // 跳过第一列，接着读取第2到10列的旋转矩阵元素
+            if (std::getline(iss, dummy_column, ',') &&
+                iss >> r11 && iss.get() == ',' &&
+                iss >> r12 && iss.get() == ',' &&
+                iss >> r13 && iss.get() == ',' &&
+                iss >> r21 && iss.get() == ',' &&
+                iss >> r22 && iss.get() == ',' &&
+                iss >> r23 && iss.get() == ',' &&
+                iss >> r31 && iss.get() == ',' &&
+                iss >> r32 && iss.get() == ',' &&
+                iss >> r33) {
+                
+                // 构建并返回旋转矩阵
+                Eigen::Matrix3d rotation_matrix;
+                rotation_matrix << r11, r12, r13,
+                                   r21, r22, r23,
+                                   r31, r32, r33;
+                return rotation_matrix;
+            }
+        }
+    }
+        // 如果没有找到对应的行，返回单位矩阵作为默认值
+    return Eigen::Matrix3d::Identity();
+}
+
+
 void RotationEstimator::InitializeFromMaximumSpanningTree(
     const ViewGraph& view_graph, std::unordered_map<image_t, Image>& images) {
   // Here, we assume that largest connected component is already retrieved, so
   // we do not need to do that again compute maximum spanning tree.
+
+  // std::string rotation_file = "/home/hjl/data/rotation.txt";
+  Eigen::Matrix3d root_rotation;
+  root_rotation = Eigen::AngleAxisd(M_PI, Eigen::Vector3d::UnitX()).toRotationMatrix();// 旋转180度，绕X轴生成旋转矩阵
+
   std::unordered_map<image_t, image_t> parents;
   image_t root = MaximumSpanningTree(view_graph, images, parents, INLIER_NUM);
-
+  
   // Iterate through the tree to initialize the rotation
   // Establish child info
   std::unordered_map<image_t, std::vector<image_t>> children;
@@ -90,11 +189,22 @@ void RotationEstimator::InitializeFromMaximumSpanningTree(
     // Add all children into the tree
     for (auto& child : children[curr]) indexes.push(child);
     // If it is root, then fix it to be the original estimation
-    if (curr == root) continue;
+    // if (curr == root) continue;
+
+    if (curr == root) {
+      //Eigen::Matrix3d root_rotation = GetRotationFromTxt(rotation_file, root); // 从文件中读取根节点的旋转矩阵
+      images[root].cam_from_world.rotation = root_rotation;  // 直接赋值旋转矩阵
+      // 输出调试信息，确保正确初始化
+      std::cout << "Root Image ID: " << root << std::endl;
+      std::cout << "Root Rotation Matrix (World to Camera):\n";
+      std::cout << root_rotation << std::endl;  // 打印旋转矩阵
+      continue;
+    }
 
     // Directly use the relative pose for estimation rotation
     const ImagePair& image_pair = view_graph.image_pairs.at(
         ImagePair::ImagePairToPairId(curr, parents[curr]));
+    // images[curr].cam_from_world.rotation = root_rotation;
     if (image_pair.image_id1 == curr) {
       // 1_R_w = 2_R_1^T * 2_R_w
       images[curr].cam_from_world.rotation =
@@ -110,6 +220,28 @@ void RotationEstimator::InitializeFromMaximumSpanningTree(
   }
 }
 
+/*
+void RotationEstimator::InitializeFromMaximumSpanningTree(      // 初始化2
+    const ViewGraph& view_graph, std::unordered_map<image_t, Image>& images) {
+  // 假设已经获得了连通图的最大生成树，并且不需要再次计算最大生成树
+
+  std::string rotation_file = "/home/hjl/data/rotation.txt";
+
+  // 遍历所有图片
+  for (auto& [image_id, image] : images) {
+    if (!image.is_registered) continue;
+
+    // 对每一张图片，直接从文件中读取旋转矩阵并初始化
+    Eigen::Matrix3d rotation_matrix = GetRotationFromTxt(rotation_file, image_id);
+    images[image_id].cam_from_world.rotation = rotation_matrix;  // 直接赋值旋转矩阵
+
+    // 输出调试信息，确保正确初始化
+    std::cout << "Image ID: " << image_id << std::endl;
+    std::cout << "Rotation Matrix (World to Camera):\n";
+    std::cout << rotation_matrix << std::endl;  // 逐项打印旋转矩阵
+  }
+}
+*/
 void RotationEstimator::SetupLinearSystem(
     const ViewGraph& view_graph, std::unordered_map<image_t, Image>& images) {
   // Clear all the structures
