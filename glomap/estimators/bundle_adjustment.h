@@ -12,7 +12,7 @@ struct BundleAdjusterOptions : public OptimizationBaseOptions {
  public:
   // Flags for which parameters to optimize
   bool optimize_rotations = true;
-  bool optimize_translation = true;
+  bool optimize_translation = false;
   bool optimize_intrinsics = true;
   bool optimize_points = true;
 

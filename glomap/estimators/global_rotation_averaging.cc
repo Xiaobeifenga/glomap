@@ -160,9 +160,9 @@ void RotationEstimator::InitializeFromMaximumSpanningTree(
   // Here, we assume that largest connected component is already retrieved, so
   // we do not need to do that again compute maximum spanning tree.
 
-  // std::string rotation_file = "/home/hjl/data/rotation.txt";
-  Eigen::Matrix3d root_rotation;
-  root_rotation = Eigen::AngleAxisd(M_PI, Eigen::Vector3d::UnitX()).toRotationMatrix();// 旋转180度，绕X轴生成旋转矩阵
+  std::string rotation_file = "/home/hjl/data/rotation.txt";
+  // Eigen::Matrix3d root_rotation;
+  // root_rotation = Eigen::AngleAxisd(M_PI, Eigen::Vector3d::UnitX()).toRotationMatrix();// 旋转180度，绕X轴生成旋转矩阵
 
   std::unordered_map<image_t, image_t> parents;
   image_t root = MaximumSpanningTree(view_graph, images, parents, INLIER_NUM);
@@ -192,7 +192,7 @@ void RotationEstimator::InitializeFromMaximumSpanningTree(
     // if (curr == root) continue;
 
     if (curr == root) {
-      //Eigen::Matrix3d root_rotation = GetRotationFromTxt(rotation_file, root); // 从文件中读取根节点的旋转矩阵
+      Eigen::Matrix3d root_rotation = GetRotationFromTxt(rotation_file, root); // 从文件中读取根节点的旋转矩阵
       images[root].cam_from_world.rotation = root_rotation;  // 直接赋值旋转矩阵
       // 输出调试信息，确保正确初始化
       std::cout << "Root Image ID: " << root << std::endl;

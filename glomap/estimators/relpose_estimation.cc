@@ -2,7 +2,14 @@
 
 #include <PoseLib/robust.h>
 
+#include <fstream>
+#include <sstream>
+#include <iostream>
+
 namespace glomap {
+
+extern Eigen::Matrix3d GetRotationFromTxt(const std::string& rotation_file, int image_id);
+extern Eigen::Vector3d GetTranslationFromTxt(const std::string& translation_file, int image_id);
 
 void EstimateRelativePoses(ViewGraph& view_graph,
                            std::unordered_map<camera_t, Camera>& cameras,
@@ -47,29 +54,91 @@ void EstimateRelativePoses(ViewGraph& view_graph,
       }
 
       inliers.clear();
-      poselib::CameraPose pose_rel_calc;
-      try {
-        poselib::estimate_relative_pose(
-            points2D_1,
-            points2D_2,
-            ColmapCameraToPoseLibCamera(cameras[image1.camera_id]),
-            ColmapCameraToPoseLibCamera(cameras[image2.camera_id]),
-            options.ransac_options,
-            options.bundle_options,
-            &pose_rel_calc,
-            &inliers);
-      } catch (const std::exception& e) {
-        LOG(ERROR) << "Error in relative pose estimation: " << e.what();
-        image_pair.is_valid = false;
-        continue;
+
+      // Step 1: Read the initial absolute rotation and translation for both images
+      Eigen::Matrix3d rotation_matrix1 = GetRotationFromTxt("/home/hjl/data/rotation.txt", image_pair.image_id1);
+      Eigen::Vector3d translation1 = GetTranslationFromTxt("/home/hjl/data/translation.txt", image_pair.image_id1);
+      Eigen::Matrix3d rotation_matrix2 = GetRotationFromTxt("/home/hjl/data/rotation.txt", image_pair.image_id2);
+      Eigen::Vector3d translation2 = GetTranslationFromTxt("/home/hjl/data/translation.txt", image_pair.image_id2);
+
+      // Check if the rotations and translations from the file are valid
+      bool use_file_data = !(rotation_matrix1.isIdentity() && translation1.isZero()) &&
+                          !(rotation_matrix2.isIdentity() && translation2.isZero());
+
+      if (use_file_data) {
+          // If both rotations and translations are valid, use them to compute the relative pose
+          // Step 2: Compute relative pose based on the absolute poses
+          Eigen::Matrix3d relative_rotation = rotation_matrix2.transpose() * rotation_matrix1;
+          Eigen::Vector3d relative_translation = translation2 - relative_rotation * translation1;
+          
+        #pragma omp critical
+        {
+            std::cout << "Relative Rotation Matrix:\n" << relative_rotation << std::endl;
+            std::cout << "Relative Translation Vector:\n" << relative_translation.transpose() << std::endl;
+        }
+
+          // Step 3: Convert the relative pose to the glomap format (rotation and translation)
+          Eigen::Quaterniond relative_rotation_quat(relative_rotation);
+
+          // Store the relative pose in the image pair (rotation and translation)
+          for (int i = 0; i < 4; i++) {
+              image_pair.cam2_from_cam1.rotation.coeffs()[i] = relative_rotation_quat.coeffs()[(i + 1) % 4];
+          }
+          image_pair.cam2_from_cam1.translation = relative_translation;
+
+      } else {
+          // If the data is not available or invalid, use the original logic for relative pose estimation
+          std::cout << "Using original pose estimation logic for image pair: " << image_pair.image_id1 << " and " << image_pair.image_id2 << std::endl;
+
+          poselib::CameraPose pose_rel_calc;
+          try {
+              poselib::estimate_relative_pose(
+                  points2D_1,
+                  points2D_2,
+                  ColmapCameraToPoseLibCamera(cameras[image1.camera_id]),
+                  ColmapCameraToPoseLibCamera(cameras[image2.camera_id]),
+                  options.ransac_options,
+                  options.bundle_options,
+                  &pose_rel_calc,
+                  &inliers);
+          } catch (const std::exception& e) {
+              LOG(ERROR) << "Error in relative pose estimation: " << e.what();
+              image_pair.is_valid = false;
+              continue;
+          }
+
+          // Convert the relative pose to the glomap format
+          for (int i = 0; i < 4; i++) {
+              image_pair.cam2_from_cam1.rotation.coeffs()[i] = pose_rel_calc.q[(i + 1) % 4];
+          }
+          image_pair.cam2_from_cam1.translation = pose_rel_calc.t;
       }
 
-      // Convert the relative pose to the glomap format
-      for (int i = 0; i < 4; i++) {
-        image_pair.cam2_from_cam1.rotation.coeffs()[i] =
-            pose_rel_calc.q[(i + 1) % 4];
-      }
-      image_pair.cam2_from_cam1.translation = pose_rel_calc.t;
+      // poselib::CameraPose pose_rel_calc;
+      // std::cout << "Estimating relative pose for image pair: "
+      //     << image_pair.image_id1 << " and " << image_pair.image_id2 << std::endl;
+      // try {
+      //   poselib::estimate_relative_pose(
+      //       points2D_1,
+      //       points2D_2,
+      //       ColmapCameraToPoseLibCamera(cameras[image1.camera_id]),
+      //       ColmapCameraToPoseLibCamera(cameras[image2.camera_id]),
+      //       options.ransac_options,
+      //       options.bundle_options,
+      //       &pose_rel_calc,
+      //       &inliers);
+      // } catch (const std::exception& e) {
+      //   LOG(ERROR) << "Error in relative pose estimation: " << e.what();
+      //   image_pair.is_valid = false;
+      //   continue;
+      // }
+
+      // // Convert the relative pose to the glomap format
+      // for (int i = 0; i < 4; i++) {
+      //   image_pair.cam2_from_cam1.rotation.coeffs()[i] =
+      //       pose_rel_calc.q[(i + 1) % 4];
+      // }
+      // image_pair.cam2_from_cam1.translation = pose_rel_calc.t;
     }
   }
 
